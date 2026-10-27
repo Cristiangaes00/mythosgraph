@@ -1,0 +1,42 @@
+{
+  "name": "mythosgraph",
+  "version": "1.0.0",
+  "description": "MythosGraph | Atlas de Mundos y Dinastías — Estudio visual de Worldbuilding, Wiki estructurada y Árboles Genealógicos.",
+  "type": "module",
+  "scripts": {
+    "setup": "prisma generate && prisma migrate deploy",
+    "dev": "concurrently \"vite\" \"tsx server/index.ts\"",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint src server",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@prisma/adapter-better-sqlite3": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.6",
+    "dagre": "^0.8.5",
+    "express": "^5.2.1",
+    "lucide-react": "^1.35.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.2",
+    "reactflow": "^11.11.4",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/dagre": "^0.7.54",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^10.0.5",
+    "oxlint": "^1.79.0",
+    "prisma": "^7.10.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}
