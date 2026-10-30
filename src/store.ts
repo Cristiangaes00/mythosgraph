@@ -1,5 +1,36 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { DEFAULT_WORLD_COLOR, normalizeHex } from './utils/worldTheme';
+
+const WORLD_META_EDGE_ID = '__world_meta__';
+
+function packEdgesWithMeta(edges: Edge[], themeColor?: string): Edge[] {
+  const cleanEdges = (edges || []).filter((e) => e.id !== WORLD_META_EDGE_ID);
+  const color = normalizeHex(themeColor);
+  return [
+    ...cleanEdges,
+    {
+      id: WORLD_META_EDGE_ID,
+      source: '__meta_color__',
+      target: color,
+    },
+  ];
+}
+
+function unpackEdgesAndMeta(rawEdges: Edge[]): {
+  cleanEdges: Edge[];
+  extractedColor?: string;
+} {
+  if (!Array.isArray(rawEdges)) {
+    return { cleanEdges: [] };
+  }
+  const metaEdge = rawEdges.find((e) => e.id === WORLD_META_EDGE_ID);
+  const cleanEdges = rawEdges.filter((e) => e.id !== WORLD_META_EDGE_ID);
+  return {
+    cleanEdges,
+    extractedColor: metaEdge?.target ? normalizeHex(metaEdge.target) : undefined,
+  };
+}
 
 export type NodeType =
   | 'character'
@@ -112,6 +143,7 @@ export interface Edge {
 export interface Schema {
   id: string;
   name: string;
+  themeColor?: string;
   nodes: Node[];
   edges: Edge[];
   createdAt: number;
@@ -123,14 +155,16 @@ export type SaveStatus = 'saved' | 'saving' | 'offline';
 interface AppState {
   theme: 'dark' | 'light';
   setTheme: (theme: 'dark' | 'light') => void;
+  worldColors: Record<string, string>;
   isInitialized: boolean;
   saveStatus: SaveStatus;
   schemas: Schema[];
   setSchemas: (schemas: Schema[]) => void;
-  addSchema: (name: string) => string;
+  addSchema: (name: string, themeColor?: string) => string;
   duplicateSchema: (id: string) => string | null;
   updateSchema: (id: string, nodes: Node[], edges: Edge[]) => void;
   renameSchema: (id: string, name: string) => void;
+  updateSchemaColor: (id: string, themeColor: string) => void;
   deleteSchema: (id: string) => void;
   init: () => Promise<void>;
   importData: (jsonData: string) => number;
@@ -162,7 +196,10 @@ export const useStore = create<AppState>()(
               body: JSON.stringify({
                 name: currentSchema.name,
                 nodes: currentSchema.nodes,
-                edges: currentSchema.edges,
+                edges: packEdgesWithMeta(
+                  currentSchema.edges,
+                  currentSchema.themeColor
+                ),
               }),
             });
             if (!res.ok) throw new Error('Error de servidor');
@@ -180,6 +217,7 @@ export const useStore = create<AppState>()(
       return {
         theme: 'dark',
         setTheme: (theme) => set({ theme }),
+        worldColors: {},
         isInitialized: false,
         saveStatus: 'saved',
         schemas: [],
@@ -190,7 +228,43 @@ export const useStore = create<AppState>()(
             const res = await fetch('/api/schemas');
             if (res.ok) {
               const data = await res.json();
-              set({ schemas: data, isInitialized: true, saveStatus: 'saved' });
+              set((state) => {
+                const nextWorldColors = { ...(state.worldColors || {}) };
+                for (const localSchema of state.schemas) {
+                  if (localSchema.themeColor && !nextWorldColors[localSchema.id]) {
+                    nextWorldColors[localSchema.id] = normalizeHex(
+                      localSchema.themeColor
+                    );
+                  }
+                }
+
+                const hydratedSchemas: Schema[] = (data || []).map(
+                  (rawSchema: Schema) => {
+                    const { cleanEdges, extractedColor } = unpackEdgesAndMeta(
+                      rawSchema.edges
+                    );
+                    const resolvedColor =
+                      extractedColor ||
+                      rawSchema.themeColor ||
+                      nextWorldColors[rawSchema.id] ||
+                      DEFAULT_WORLD_COLOR;
+                    nextWorldColors[rawSchema.id] = normalizeHex(resolvedColor);
+
+                    return {
+                      ...rawSchema,
+                      edges: cleanEdges,
+                      themeColor: normalizeHex(resolvedColor),
+                    };
+                  }
+                );
+
+                return {
+                  schemas: hydratedSchemas,
+                  worldColors: nextWorldColors,
+                  isInitialized: true,
+                  saveStatus: 'saved',
+                };
+              });
               return;
             }
             set({ isInitialized: true, saveStatus: 'offline' });
@@ -199,11 +273,13 @@ export const useStore = create<AppState>()(
           }
         },
 
-        addSchema: (name) => {
+        addSchema: (name, themeColor = DEFAULT_WORLD_COLOR) => {
           const id = crypto.randomUUID();
+          const normalizedColor = normalizeHex(themeColor);
           const newSchema: Schema = {
             id,
             name: name.trim(),
+            themeColor: normalizedColor,
             nodes: [],
             edges: [],
             createdAt: Date.now(),
@@ -212,13 +288,17 @@ export const useStore = create<AppState>()(
 
           set((state) => ({
             schemas: [newSchema, ...state.schemas],
+            worldColors: { ...(state.worldColors || {}), [id]: normalizedColor },
             saveStatus: 'saving',
           }));
 
           fetch('/api/schemas', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newSchema),
+            body: JSON.stringify({
+              ...newSchema,
+              edges: packEdgesWithMeta(newSchema.edges, normalizedColor),
+            }),
           })
             .then((res) => {
               if (!res.ok) throw new Error('Failed to create');
@@ -236,24 +316,39 @@ export const useStore = create<AppState>()(
           if (!source) return null;
 
           const newId = crypto.randomUUID();
+          const resolvedColor = normalizeHex(
+            source.themeColor || get().worldColors?.[id]
+          );
           const clonedSchema: Schema = {
             id: newId,
             name: `${source.name} (Copia)`,
+            themeColor: resolvedColor,
             nodes: JSON.parse(JSON.stringify(source.nodes)),
-            edges: JSON.parse(JSON.stringify(source.edges)),
+            edges: JSON.parse(
+              JSON.stringify(
+                source.edges.filter((e) => e.id !== WORLD_META_EDGE_ID)
+              )
+            ),
             createdAt: Date.now(),
             updatedAt: Date.now(),
           };
 
           set((state) => ({
             schemas: [clonedSchema, ...state.schemas],
+            worldColors: {
+              ...(state.worldColors || {}),
+              [newId]: resolvedColor,
+            },
             saveStatus: 'saving',
           }));
 
           fetch('/api/schemas', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(clonedSchema),
+            body: JSON.stringify({
+              ...clonedSchema,
+              edges: packEdgesWithMeta(clonedSchema.edges, resolvedColor),
+            }),
           })
             .then((res) => {
               if (!res.ok) throw new Error('Failed to duplicate');
@@ -267,10 +362,16 @@ export const useStore = create<AppState>()(
         },
 
         updateSchema: (id, nodes, edges) => {
+          const cleanEdges = edges.filter((e) => e.id !== WORLD_META_EDGE_ID);
           set((state) => ({
             schemas: state.schemas.map((schema) =>
               schema.id === id
-                ? { ...schema, nodes, edges, updatedAt: Date.now() }
+                ? {
+                    ...schema,
+                    nodes,
+                    edges: cleanEdges,
+                    updatedAt: Date.now(),
+                  }
                 : schema
             ),
           }));
@@ -290,6 +391,20 @@ export const useStore = create<AppState>()(
           scheduleSync(id);
         },
 
+        updateSchemaColor: (id, themeColor) => {
+          const normalized = normalizeHex(themeColor);
+          set((state) => ({
+            worldColors: { ...(state.worldColors || {}), [id]: normalized },
+            schemas: state.schemas.map((schema) =>
+              schema.id === id
+                ? { ...schema, themeColor: normalized, updatedAt: Date.now() }
+                : schema
+            ),
+          }));
+
+          scheduleSync(id);
+        },
+
         deleteSchema: (id) => {
           const pendingTimer = saveTimers.get(id);
           if (pendingTimer) {
@@ -297,10 +412,15 @@ export const useStore = create<AppState>()(
             saveTimers.delete(id);
           }
 
-          set((state) => ({
-            schemas: state.schemas.filter((schema) => schema.id !== id),
-            saveStatus: 'saving',
-          }));
+          set((state) => {
+            const nextColors = { ...(state.worldColors || {}) };
+            delete nextColors[id];
+            return {
+              schemas: state.schemas.filter((schema) => schema.id !== id),
+              worldColors: nextColors,
+              saveStatus: 'saving',
+            };
+          });
 
           fetch(`/api/schemas/${id}`, {
             method: 'DELETE',
@@ -331,36 +451,54 @@ export const useStore = create<AppState>()(
             throw new Error('Formato de datos inválido.');
           }
 
+          const cleanedToImport: Schema[] = schemasToImport.map((item) => {
+            const { cleanEdges, extractedColor } = unpackEdgesAndMeta(item.edges);
+            const resolvedColor = normalizeHex(
+              item.themeColor || extractedColor || DEFAULT_WORLD_COLOR
+            );
+            return {
+              ...item,
+              edges: cleanEdges,
+              themeColor: resolvedColor,
+              createdAt: item.createdAt || Date.now(),
+              updatedAt: item.updatedAt || Date.now(),
+            };
+          });
+
           set((state) => {
             const existingMap = new Map(state.schemas.map((s) => [s.id, s]));
-            for (const item of schemasToImport) {
-              existingMap.set(item.id, {
-                ...item,
-                createdAt: item.createdAt || Date.now(),
-                updatedAt: item.updatedAt || Date.now(),
-              });
+            const nextColors = { ...(state.worldColors || {}) };
+            for (const item of cleanedToImport) {
+              existingMap.set(item.id, item);
+              if (item.themeColor) {
+                nextColors[item.id] = item.themeColor;
+              }
             }
             return {
               schemas: Array.from(existingMap.values()).sort(
                 (a, b) => b.updatedAt - a.updatedAt
               ),
+              worldColors: nextColors,
               saveStatus: 'saving',
             };
           });
 
           Promise.all(
-            schemasToImport.map((schema) =>
+            cleanedToImport.map((schema) =>
               fetch('/api/schemas', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(schema),
+                body: JSON.stringify({
+                  ...schema,
+                  edges: packEdgesWithMeta(schema.edges, schema.themeColor),
+                }),
               })
             )
           )
             .then(() => set({ saveStatus: 'saved' }))
             .catch(() => set({ saveStatus: 'offline' }));
 
-          return schemasToImport.length;
+          return cleanedToImport.length;
         },
 
         exportData: (schemaId?: string) => {
@@ -377,6 +515,7 @@ export const useStore = create<AppState>()(
       name: 'worldbuilding-theme-storage',
       partialize: (state) => ({
         theme: state.theme,
+        worldColors: state.worldColors,
         schemas: state.schemas,
       }),
     }
