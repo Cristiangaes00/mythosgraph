@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
+import type { CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -18,15 +19,33 @@ import {
   Globe,
   CheckCircle2,
   AlertCircle,
+  Palette,
+  Check,
+  Sparkles,
+  ArrowRight,
+  Calendar,
 } from 'lucide-react';
 import { useStore } from '../store';
+import {
+  DEFAULT_WORLD_COLOR,
+  WORLD_COLOR_PRESETS,
+  clearWorldThemeFromDocument,
+  getWorldThemeVariables,
+  normalizeHex,
+} from '../utils/worldTheme';
 
 export default function Dashboard() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newSchemaName, setNewSchemaName] = useState('');
+  const [newSchemaColor, setNewSchemaColor] = useState(DEFAULT_WORLD_COLOR);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortMode, setSortMode] = useState<'recent' | 'alpha' | 'size'>('recent');
 
-  const [schemaToRename, setSchemaToRename] = useState<{ id: string; name: string } | null>(null);
+  const [schemaToRename, setSchemaToRename] = useState<{
+    id: string;
+    name: string;
+    themeColor: string;
+  } | null>(null);
   const [schemaToDelete, setSchemaToDelete] = useState<{ id: string; name: string } | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -34,6 +53,7 @@ export default function Dashboard() {
   const addSchema = useStore((state) => state.addSchema);
   const duplicateSchema = useStore((state) => state.duplicateSchema);
   const renameSchema = useStore((state) => state.renameSchema);
+  const updateSchemaColor = useStore((state) => state.updateSchemaColor);
   const deleteSchema = useStore((state) => state.deleteSchema);
   const theme = useStore((state) => state.theme);
   const setTheme = useStore((state) => state.setTheme);
@@ -41,6 +61,10 @@ export default function Dashboard() {
   const importData = useStore((state) => state.importData);
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    clearWorldThemeFromDocument();
+  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -56,9 +80,10 @@ export default function Dashboard() {
     e.preventDefault();
     if (!newSchemaName.trim()) return;
 
-    const id = addSchema(newSchemaName);
+    const id = addSchema(newSchemaName, newSchemaColor);
     setIsCreateModalOpen(false);
     setNewSchemaName('');
+    setNewSchemaColor(DEFAULT_WORLD_COLOR);
     navigate(`/canvas/${id}`);
   };
 
@@ -66,8 +91,9 @@ export default function Dashboard() {
     e.preventDefault();
     if (!schemaToRename || !schemaToRename.name.trim()) return;
     renameSchema(schemaToRename.id, schemaToRename.name.trim());
+    updateSchemaColor(schemaToRename.id, schemaToRename.themeColor);
     setSchemaToRename(null);
-    showToast('Nombre del mundo actualizado.');
+    showToast('Configuración del mundo actualizada.');
   };
 
   const confirmDelete = (e: React.MouseEvent) => {
@@ -124,13 +150,20 @@ export default function Dashboard() {
 
   const filteredSchemas = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return schemas;
-    return schemas.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        s.nodes.some((n) => n.data.label.toLowerCase().includes(q))
-    );
-  }, [schemas, searchQuery]);
+    const list = !q
+      ? [...schemas]
+      : schemas.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.nodes.some((n) => n.data.label.toLowerCase().includes(q))
+        );
+
+    return list.sort((a, b) => {
+      if (sortMode === 'alpha') return a.name.localeCompare(b.name);
+      if (sortMode === 'size') return b.nodes.length - a.nodes.length;
+      return b.updatedAt - a.updatedAt;
+    });
+  }, [schemas, searchQuery, sortMode]);
 
   const globalStats = useMemo(() => {
     let totalCharacters = 0;
@@ -287,84 +320,217 @@ export default function Dashboard() {
           <p>Ningún mundo o entidad coincide con "{searchQuery}".</p>
         </div>
       ) : (
-        <div className="schemas-grid">
-          {filteredSchemas.map((schema) => {
-            const charCount = schema.nodes.filter((n) => n.data.type === 'character').length;
-            const locCount = schema.nodes.filter((n) => n.data.type === 'location').length;
-            const otherCount = schema.nodes.length - charCount - locCount;
-
-            return (
-              <div
-                key={schema.id}
-                className="schema-card"
-                onClick={() => navigate(`/canvas/${schema.id}`)}
+        <>
+          <div className="dashboard-section-bar">
+            <div className="dashboard-section-title">
+              <Sparkles size={16} style={{ color: 'var(--primary)' }} />
+              <span>Universos Activos ({filteredSchemas.length})</span>
+            </div>
+            <div className="dashboard-sort-pills">
+              <button
+                type="button"
+                className={`codex-chip ${sortMode === 'recent' ? 'active' : ''}`}
+                onClick={() => setSortMode('recent')}
               >
-                <div className="schema-card-header">
-                  <h3 className="schema-card-title">{schema.name}</h3>
-                  <div className="schema-card-actions" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      className="card-action-btn"
-                      onClick={() => setSchemaToRename({ id: schema.id, name: schema.name })}
-                      title="Renombrar mundo"
-                    >
-                      <Edit3 size={15} />
-                    </button>
-                    <button
-                      className="card-action-btn"
-                      onClick={(e) => handleDuplicate(e, schema.id)}
-                      title="Duplicar mundo"
-                    >
-                      <Copy size={15} />
-                    </button>
-                    <button
-                      className="card-action-btn"
-                      onClick={() => handleExport(schema.id, schema.name)}
-                      title="Exportar este mundo en JSON"
-                    >
-                      <Download size={15} />
-                    </button>
-                    <button
-                      className="card-action-btn danger"
-                      onClick={() => setSchemaToDelete({ id: schema.id, name: schema.name })}
-                      title="Eliminar mundo"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                Más recientes
+              </button>
+              <button
+                type="button"
+                className={`codex-chip ${sortMode === 'size' ? 'active' : ''}`}
+                onClick={() => setSortMode('size')}
+              >
+                Mayor tamaño
+              </button>
+              <button
+                type="button"
+                className={`codex-chip ${sortMode === 'alpha' ? 'active' : ''}`}
+                onClick={() => setSortMode('alpha')}
+              >
+                A–Z
+              </button>
+            </div>
+          </div>
+
+          <div className="schemas-grid">
+            {filteredSchemas.map((schema) => {
+              const charCount = schema.nodes.filter((n) => n.data.type === 'character').length;
+              const locCount = schema.nodes.filter((n) => n.data.type === 'location').length;
+              const eventCount = schema.nodes.filter((n) => n.data.type === 'event').length;
+              const otherCount = schema.nodes.length - charCount - locCount - eventCount;
+              const totalCount = Math.max(schema.nodes.length, 1);
+
+              const featuredEntities = schema.nodes
+                .slice()
+                .sort(
+                  (a, b) =>
+                    (b.data.structuredData?.importance ?? 3) -
+                    (a.data.structuredData?.importance ?? 3)
+                )
+                .slice(0, 3);
+
+              const worldColor = normalizeHex(schema.themeColor || DEFAULT_WORLD_COLOR);
+              const cardVars = getWorldThemeVariables(worldColor, theme);
+              const cardStyle = {
+                '--card-accent': cardVars['--primary'],
+                '--card-accent-soft': cardVars['--primary-soft'],
+                '--card-accent-border': cardVars['--primary-border'],
+                '--card-accent-glow': cardVars['--shadow-hover'],
+              } as CSSProperties;
+
+              return (
+                <div
+                  key={schema.id}
+                  className="schema-card"
+                  style={cardStyle}
+                  onClick={() => navigate(`/canvas/${schema.id}`)}
+                >
+                  <div className="schema-card-ambient" />
+
+                  <div className="schema-card-header">
+                    <div className="schema-card-title-row">
+                      <span
+                        className="schema-world-dot"
+                        title={`Color del mundo: ${worldColor}`}
+                      />
+                      <h3 className="schema-card-title">{schema.name}</h3>
+                    </div>
+                    <div className="schema-card-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="card-action-btn"
+                        onClick={() =>
+                          setSchemaToRename({
+                            id: schema.id,
+                            name: schema.name,
+                            themeColor: worldColor,
+                          })
+                        }
+                        title="Configurar nombre y color del mundo"
+                      >
+                        <Palette size={15} />
+                      </button>
+                      <button
+                        className="card-action-btn"
+                        onClick={() =>
+                          setSchemaToRename({
+                            id: schema.id,
+                            name: schema.name,
+                            themeColor: worldColor,
+                          })
+                        }
+                        title="Renombrar mundo"
+                      >
+                        <Edit3 size={15} />
+                      </button>
+                      <button
+                        className="card-action-btn"
+                        onClick={(e) => handleDuplicate(e, schema.id)}
+                        title="Duplicar mundo"
+                      >
+                        <Copy size={15} />
+                      </button>
+                      <button
+                        className="card-action-btn"
+                        onClick={() => handleExport(schema.id, schema.name)}
+                        title="Exportar este mundo en JSON"
+                      >
+                        <Download size={15} />
+                      </button>
+                      <button
+                        className="card-action-btn danger"
+                        onClick={() => setSchemaToDelete({ id: schema.id, name: schema.name })}
+                        title="Eliminar mundo"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                <div className="schema-card-pills">
-                  <span className="entity-stat-pill">
-                    <User size={13} /> {charCount} pers.
-                  </span>
-                  <span className="entity-stat-pill">
-                    <MapPin size={13} /> {locCount} lug.
-                  </span>
-                  {otherCount > 0 && (
-                    <span className="entity-stat-pill">+{otherCount} otros</span>
+                  {/* VISUAL COMPOSITION PROGRESS BAR */}
+                  <div className="schema-composition-wrap">
+                    <div className="schema-composition-bar">
+                      {charCount > 0 && (
+                        <span
+                          className="comp-segment char"
+                          style={{ width: `${(charCount / totalCount) * 100}%` }}
+                          title={`${charCount} Personajes`}
+                        />
+                      )}
+                      {locCount > 0 && (
+                        <span
+                          className="comp-segment loc"
+                          style={{ width: `${(locCount / totalCount) * 100}%` }}
+                          title={`${locCount} Lugares`}
+                        />
+                      )}
+                      {eventCount > 0 && (
+                        <span
+                          className="comp-segment event"
+                          style={{ width: `${(eventCount / totalCount) * 100}%` }}
+                          title={`${eventCount} Eventos`}
+                        />
+                      )}
+                      {otherCount > 0 && (
+                        <span
+                          className="comp-segment other"
+                          style={{ width: `${(otherCount / totalCount) * 100}%` }}
+                          title={`${otherCount} Otras entradas`}
+                        />
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="schema-card-pills">
+                    <span className="entity-stat-pill">
+                      <User size={13} /> {charCount} pers.
+                    </span>
+                    <span className="entity-stat-pill">
+                      <MapPin size={13} /> {locCount} lug.
+                    </span>
+                    {eventCount > 0 && (
+                      <span className="entity-stat-pill">
+                        <Calendar size={13} /> {eventCount} hitos
+                      </span>
+                    )}
+                    {otherCount > 0 && (
+                      <span className="entity-stat-pill">+{otherCount} lore</span>
+                    )}
+                    <span className="entity-stat-pill">
+                      <LinkIcon size={13} /> {schema.edges.length} vínculos
+                    </span>
+                  </div>
+
+                  {featuredEntities.length > 0 && (
+                    <div className="schema-featured-strip">
+                      <span className="schema-featured-label">Destacados:</span>
+                      {featuredEntities.map((fe) => (
+                        <span key={fe.id} className="schema-featured-chip">
+                          {fe.data.label}
+                        </span>
+                      ))}
+                    </div>
                   )}
-                  <span className="entity-stat-pill">
-                    <LinkIcon size={13} /> {schema.edges.length} vínculos
-                  </span>
-                </div>
 
-                <div className="schema-card-footer">
-                  <span>{schema.nodes.length} entidades totales</span>
-                  <span>
-                    Actualizado:{' '}
-                    {new Date(schema.updatedAt).toLocaleDateString('es-ES', {
-                      day: '2-digit',
-                      month: 'short',
-                      year: 'numeric',
-                    })}
-                  </span>
-                </div>
+                  <div className="schema-card-footer">
+                    <span>
+                      Actualizado:{' '}
+                      {new Date(schema.updatedAt).toLocaleDateString('es-ES', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </span>
+                    <span className="schema-explore-cta">
+                      <span>Adentrarse</span>
+                      <ArrowRight size={13} />
+                    </span>
+                  </div>
 
-                <Network size={130} className="schema-card-icon" />
-              </div>
-            );
-          })}
-        </div>
+                  <Network size={130} className="schema-card-icon" />
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {/* MODAL: CREATE WORLD */}
@@ -373,7 +539,7 @@ export default function Dashboard() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title">Crear Nuevo Mundo</h2>
             <p className="modal-desc">
-              Asigna un nombre a tu universo, novela, campaña de rol o proyecto narrativo.
+              Asigna un nombre y un color temático a tu universo, novela o campaña.
             </p>
             <form onSubmit={handleCreate}>
               <input
@@ -384,6 +550,42 @@ export default function Dashboard() {
                 value={newSchemaName}
                 onChange={(e) => setNewSchemaName(e.target.value)}
               />
+
+              <div className="world-color-section">
+                <div className="world-color-label">
+                  <span>Color Temático del Mundo</span>
+                  <span className="world-color-hex-badge">{newSchemaColor}</span>
+                </div>
+                <div className="world-color-swatches">
+                  {WORLD_COLOR_PRESETS.map((preset) => {
+                    const isSelected =
+                      normalizeHex(newSchemaColor) === normalizeHex(preset.hex);
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={`color-swatch-btn ${isSelected ? 'active' : ''}`}
+                        style={{ backgroundColor: preset.hex }}
+                        onClick={() => setNewSchemaColor(preset.hex)}
+                        title={preset.name}
+                      >
+                        {isSelected && <Check size={14} strokeWidth={3} />}
+                      </button>
+                    );
+                  })}
+                  <label
+                    className="custom-color-input-label"
+                    title="Elegir color personalizado"
+                  >
+                    <input
+                      type="color"
+                      value={normalizeHex(newSchemaColor)}
+                      onChange={(e) => setNewSchemaColor(normalizeHex(e.target.value))}
+                    />
+                  </label>
+                </div>
+              </div>
+
               <div className="modal-actions">
                 <button
                   type="button"
@@ -392,7 +594,15 @@ export default function Dashboard() {
                 >
                   Cancelar
                 </button>
-                <button type="submit" className="btn-primary" disabled={!newSchemaName.trim()}>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  disabled={!newSchemaName.trim()}
+                  style={{
+                    background: newSchemaColor,
+                    boxShadow: `0 4px 14px ${newSchemaColor}55`,
+                  }}
+                >
                   Crear Mundo
                 </button>
               </div>
@@ -401,11 +611,14 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* MODAL: RENAME WORLD */}
+      {/* MODAL: RENAME & CONFIGURE WORLD COLOR */}
       {schemaToRename && (
         <div className="modal-overlay" onClick={() => setSchemaToRename(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title">Renombrar Mundo</h2>
+            <h2 className="modal-title">Configurar Mundo</h2>
+            <p className="modal-desc">
+              Personaliza el nombre y el color de atmósfera de este universo.
+            </p>
             <form onSubmit={handleRenameSubmit}>
               <input
                 autoFocus
@@ -416,6 +629,55 @@ export default function Dashboard() {
                   setSchemaToRename({ ...schemaToRename, name: e.target.value })
                 }
               />
+
+              <div className="world-color-section">
+                <div className="world-color-label">
+                  <span>Color Temático del Mundo</span>
+                  <span className="world-color-hex-badge">
+                    {normalizeHex(schemaToRename.themeColor)}
+                  </span>
+                </div>
+                <div className="world-color-swatches">
+                  {WORLD_COLOR_PRESETS.map((preset) => {
+                    const isSelected =
+                      normalizeHex(schemaToRename.themeColor) ===
+                      normalizeHex(preset.hex);
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={`color-swatch-btn ${isSelected ? 'active' : ''}`}
+                        style={{ backgroundColor: preset.hex }}
+                        onClick={() =>
+                          setSchemaToRename({
+                            ...schemaToRename,
+                            themeColor: preset.hex,
+                          })
+                        }
+                        title={preset.name}
+                      >
+                        {isSelected && <Check size={14} strokeWidth={3} />}
+                      </button>
+                    );
+                  })}
+                  <label
+                    className="custom-color-input-label"
+                    title="Elegir color personalizado"
+                  >
+                    <input
+                      type="color"
+                      value={normalizeHex(schemaToRename.themeColor)}
+                      onChange={(e) =>
+                        setSchemaToRename({
+                          ...schemaToRename,
+                          themeColor: normalizeHex(e.target.value),
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+
               <div className="modal-actions">
                 <button
                   type="button"
@@ -428,8 +690,12 @@ export default function Dashboard() {
                   type="submit"
                   className="btn-primary"
                   disabled={!schemaToRename.name.trim()}
+                  style={{
+                    background: schemaToRename.themeColor,
+                    boxShadow: `0 4px 14px ${schemaToRename.themeColor}55`,
+                  }}
                 >
-                  Guardar
+                  Guardar Cambios
                 </button>
               </div>
             </form>
