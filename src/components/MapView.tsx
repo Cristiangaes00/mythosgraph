@@ -12,12 +12,18 @@ import dagre from 'dagre';
 import { Search, ArrowLeftRight, ArrowUpDown } from 'lucide-react';
 import { useStore } from '../store';
 import type { Node, Edge } from '../store';
+import {
+  DEFAULT_WORLD_COLOR,
+  getWorldThemeVariables,
+  normalizeHex,
+} from '../utils/worldTheme';
 import 'reactflow/dist/style.css';
 
 interface MapViewProps {
   nodes: Node[];
   edges: Edge[];
   onSelectNode: (id: string) => void;
+  themeColor?: string;
 }
 
 const nodeWidth = 230;
@@ -59,12 +65,21 @@ const getLayoutedElements = (
   return { nodes };
 };
 
-export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
+export default function MapView({
+  nodes,
+  edges,
+  onSelectNode,
+  themeColor,
+}: MapViewProps) {
   const [rfNodes, setNodes, onNodesChange] = useNodesState([]);
   const [rfEdges, setEdges, onEdgesChange] = useEdgesState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [direction, setDirection] = useState<'LR' | 'TB'>('LR');
   const theme = useStore((state) => state.theme);
+  const activeWorldColor = normalizeHex(themeColor || DEFAULT_WORLD_COLOR);
+  const worldVars = getWorldThemeVariables(activeWorldColor, theme);
+  const charPrimary = worldVars['--primary'];
+  const charHover = worldVars['--primary-hover'];
 
   useEffect(() => {
     if (nodes.length === 0) {
@@ -237,14 +252,14 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
 
       const bg =
         n.data.type === 'character'
-          ? 'linear-gradient(135deg, #059669, #047857)'
+          ? `linear-gradient(135deg, ${charPrimary}, ${charHover})`
           : n.data.type === 'location'
             ? 'linear-gradient(135deg, #0891B2, #0E7490)'
             : 'linear-gradient(135deg, #334155, #1E293B)';
 
       const borderColor =
         n.data.type === 'character'
-          ? '#34D399'
+          ? activeWorldColor
           : n.data.type === 'location'
             ? '#22D3EE'
             : '#94A3B8';
@@ -281,7 +296,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
       animated: true,
       type: 'straight',
       style: {
-        stroke: '#34D399',
+        stroke: charPrimary,
         strokeWidth: 1.5,
         strokeDasharray: '5 5',
         opacity: 0.7,
@@ -296,7 +311,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
 
     setNodes(layoutedNodes);
     setEdges([...layoutEdges, ...narrativeEdges]);
-  }, [nodes, edges, direction, setNodes, setEdges]);
+  }, [nodes, edges, direction, charPrimary, charHover, activeWorldColor, setNodes, setEdges]);
 
   useEffect(() => {
     setNodes((nds) =>
@@ -329,7 +344,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
           q && isSearchMatch
             ? '2.5px solid #F59E0B'
             : realNode.data.type === 'character'
-              ? '1.5px solid #34D399'
+              ? `1.5px solid ${activeWorldColor}`
               : realNode.data.type === 'location'
                 ? '1.5px solid #22D3EE'
                 : '1.5px solid #94A3B8';
@@ -346,7 +361,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
         };
       })
     );
-  }, [searchQuery, nodes, setNodes]);
+  }, [searchQuery, nodes, activeWorldColor, setNodes]);
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -364,7 +379,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
               <span className="legend-dot" style={{ background: '#F59E0B' }} /> Facción
             </span>
             <span className="legend-item">
-              <span className="legend-dot" style={{ background: '#10B981' }} /> Personaje
+              <span className="legend-dot" style={{ background: charPrimary }} /> Personaje
             </span>
             <span className="legend-item">
               <span className="legend-dot" style={{ background: '#06B6D4' }} /> Lugar
@@ -443,7 +458,7 @@ export default function MapView({ nodes, edges, onSelectNode }: MapViewProps) {
               nodeColor={(n) => {
                 if (n.id.startsWith('virtual-faction-')) return '#F59E0B';
                 if (n.id.startsWith('virtual-')) return '#06B6D4';
-                return '#10B981';
+                return charPrimary;
               }}
               maskColor={
                 theme === 'dark' ? 'rgba(8, 18, 20, 0.72)' : 'rgba(243, 239, 230, 0.72)'

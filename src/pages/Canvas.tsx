@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useStore, getRelationshipColor } from '../store';
@@ -29,11 +29,29 @@ import {
   Sparkles,
   Tag,
   Star,
+  AtSign,
+  Eye,
+  Edit3,
+  Palette,
+  Check,
+  Clock,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import MapView from '../components/MapView';
 import FamilyTreeView from '../components/FamilyTreeView';
 import CodexGalleryView from '../components/CodexGalleryView';
+import TimelineView from '../components/TimelineView';
+import CommandPaletteModal from '../components/CommandPaletteModal';
 import CreatableSelect from '../components/CreatableSelect';
+import MentionTextarea, { renderTextWithMentions } from '../components/MentionTextarea';
+import {
+  DEFAULT_WORLD_COLOR,
+  WORLD_COLOR_PRESETS,
+  applyWorldThemeToDocument,
+  clearWorldThemeFromDocument,
+  normalizeHex,
+} from '../utils/worldTheme';
 import '../App.css';
 
 const INVERSE_RELATIONSHIPS: Record<string, string> = {
@@ -78,10 +96,14 @@ export default function Canvas() {
   const setTheme = useStore((state) => state.setTheme);
   const updateSchema = useStore((state) => state.updateSchema);
   const renameSchema = useStore((state) => state.renameSchema);
+  const updateSchemaColor = useStore((state) => state.updateSchemaColor);
 
   const tabParam = searchParams.get('tab');
-  const activeTab: 'wiki' | 'codex' | 'map' | 'family' =
-    tabParam === 'codex' || tabParam === 'map' || tabParam === 'family'
+  const activeTab: 'wiki' | 'codex' | 'timeline' | 'map' | 'family' =
+    tabParam === 'codex' ||
+    tabParam === 'timeline' ||
+    tabParam === 'map' ||
+    tabParam === 'family'
       ? tabParam
       : 'wiki';
   const activeNodeId = searchParams.get('node');
@@ -98,11 +120,51 @@ export default function Canvas() {
   const [entityToDelete, setEntityToDelete] = useState<Node | null>(null);
   const [isNewCategoryModalOpen, setIsNewCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [isNarrativePreview, setIsNarrativePreview] = useState(false);
+  const [isWorldColorPopoverOpen, setIsWorldColorPopoverOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const narrativeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const worldColorPopoverRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (schema) {
+      applyWorldThemeToDocument(schema.themeColor || DEFAULT_WORLD_COLOR, theme);
+    }
+    return () => {
+      clearWorldThemeFromDocument();
+    };
+  }, [schema?.themeColor, schema?.id, theme]);
+
+  useEffect(() => {
+    if (!isWorldColorPopoverOpen) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (
+        worldColorPopoverRef.current &&
+        !worldColorPopoverRef.current.contains(e.target as globalThis.Node)
+      ) {
+        setIsWorldColorPopoverOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isWorldColorPopoverOpen]);
 
   const nodes = schema?.nodes ?? EMPTY_NODES;
   const edges = schema?.edges ?? EMPTY_EDGES;
 
-  const setActiveTab = (tab: 'wiki' | 'codex' | 'map' | 'family') => {
+  const setActiveTab = (tab: 'wiki' | 'codex' | 'timeline' | 'map' | 'family') => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('tab', tab);
@@ -294,16 +356,129 @@ export default function Canvas() {
     switchToWiki(newId);
   };
 
+  const getLatestSchemaState = () => {
+    const current = useStore.getState().schemas.find((s) => s.id === schema.id);
+    return {
+      latestNodes: current?.nodes ?? nodes,
+      latestEdges: current?.edges ?? edges,
+    };
+  };
+
   const handleUpdateNode = (nodeId: string, updates: Partial<Node['data']>) => {
-    const newNodes = nodes.map((n) =>
-      n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n
-    );
-    updateSchema(schema.id, newNodes, edges);
+    const { latestNodes, latestEdges } = getLatestSchemaState();
+    const targetNode = latestNodes.find((n) => n.id === nodeId);
+    const oldLabel = targetNode?.data.label?.trim();
+    const newLabel = updates.label?.trim();
+
+    const newNodes = latestNodes.map((n) => {
+      if (n.id === nodeId) {
+        return { ...n, data: { ...n.data, ...updates } };
+      }
+      // If entity label changed, keep @OldLabel references in sync with @NewLabel
+      if (
+        oldLabel &&
+        newLabel &&
+        oldLabel !== newLabel &&
+        n.data.content?.includes(`@${oldLabel}`)
+      ) {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            content: n.data.content.split(`@${oldLabel}`).join(`@${newLabel}`),
+          },
+        };
+      }
+      return n;
+    });
+    updateSchema(schema.id, newNodes, latestEdges);
   };
 
   const handleUpdateActiveNode = (updates: Partial<Node['data']>) => {
     if (!activeNodeId) return;
     handleUpdateNode(activeNodeId, updates);
+  };
+
+  const handleEnsureLinkFromMention = (
+    targetNodeId: string,
+    customSourceId?: string
+  ) => {
+    const sourceId = customSourceId || activeNodeId;
+    if (!sourceId || !targetNodeId || sourceId === targetNodeId) return;
+
+    const { latestNodes, latestEdges } = getLatestSchemaState();
+    const exists = latestEdges.some(
+      (e) =>
+        (e.source === sourceId && e.target === targetNodeId) ||
+        (e.source === targetNodeId && e.target === sourceId)
+    );
+
+    if (!exists) {
+      const newEdge: Edge = {
+        id: crypto.randomUUID(),
+        source: sourceId,
+        target: targetNodeId,
+      };
+      updateSchema(schema.id, latestNodes, [...latestEdges, newEdge]);
+    }
+  };
+
+  const handleCreateAndLinkFromMention = (
+    label: string,
+    customSourceId?: string
+  ): Node | null => {
+    const cleanLabel = label.trim();
+    if (!cleanLabel) return null;
+
+    const { latestNodes, latestEdges } = getLatestSchemaState();
+    const newId = crypto.randomUUID();
+    const newNode: Node = {
+      id: newId,
+      data: {
+        label: cleanLabel,
+        content: '',
+        type: 'generic',
+      },
+    };
+
+    const sourceId = customSourceId || activeNodeId;
+    const nextEdges = [...latestEdges];
+    if (sourceId && sourceId !== newId) {
+      nextEdges.push({
+        id: crypto.randomUUID(),
+        source: sourceId,
+        target: newId,
+      });
+    }
+
+    updateSchema(schema.id, [...latestNodes, newNode], nextEdges);
+    return newNode;
+  };
+
+  const handleInsertAtSymbol = () => {
+    if (!activeNode) return;
+    if (isNarrativePreview) {
+      setIsNarrativePreview(false);
+    }
+    requestAnimationFrame(() => {
+      const el = narrativeTextareaRef.current;
+      if (!el) return;
+      el.focus();
+      const start = el.selectionStart ?? (activeNode.data.content?.length || 0);
+      const current = activeNode.data.content || '';
+      const before = current.slice(0, start);
+      const after = current.slice(start);
+      const prefix =
+        before.length > 0 && !/[\s([«"¡¿—\-/]$/.test(before) ? ' @' : '@';
+      const nextContent = `${before}${prefix}${after}`;
+      handleUpdateActiveNode({ content: nextContent });
+      const nextCaret = before.length + prefix.length;
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(nextCaret, nextCaret);
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+    });
   };
 
   const handleInsertTemplate = (snippet: string) => {
@@ -745,7 +920,7 @@ export default function Canvas() {
   return (
     <div className="wiki-layout">
       {/* SIDEBAR */}
-      <aside className="wiki-sidebar">
+      <aside className={`wiki-sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="wiki-sidebar-header">
           <button className="back-btn" onClick={() => navigate('/')}>
             <ChevronLeft size={18} />
@@ -814,6 +989,22 @@ export default function Canvas() {
         {/* TOP PROJECT HEADER */}
         <header className="project-header">
           <div className="project-header-left">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+              title={
+                isSidebarCollapsed
+                  ? 'Mostrar panel de índice lateral'
+                  : 'Modo Enfoque (Ocultar barra lateral)'
+              }
+            >
+              {isSidebarCollapsed ? (
+                <PanelLeftOpen size={18} />
+              ) : (
+                <PanelLeftClose size={18} />
+              )}
+            </button>
             <img src="/logo.png" alt="MythosGraph Logo" className="project-logo" />
             <input
               type="text"
@@ -826,6 +1017,17 @@ export default function Canvas() {
           </div>
 
           <div className="project-header-right">
+            <button
+              type="button"
+              className="command-palette-trigger-btn"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              title="Buscador rápido y comandos del mundo (Ctrl + K)"
+            >
+              <Search size={14} />
+              <span>Buscar o saltar...</span>
+              <kbd>Ctrl K</kbd>
+            </button>
+
             <div className={`save-status-pill ${saveStatus}`}>
               {saveStatus === 'saved' && (
                 <>
@@ -847,10 +1049,70 @@ export default function Canvas() {
               )}
             </div>
 
+            <div className="world-theme-picker-wrap" ref={worldColorPopoverRef}>
+              <button
+                type="button"
+                className="world-theme-trigger-btn"
+                onClick={() => setIsWorldColorPopoverOpen((prev) => !prev)}
+                title="Personalizar el color temático de este mundo"
+              >
+                <span className="world-theme-dot" />
+                <Palette size={14} />
+                <span>Color del Mundo</span>
+              </button>
+
+              {isWorldColorPopoverOpen && (
+                <div className="world-theme-popover">
+                  <div className="world-color-label">
+                    <span>Atmósfera del Mundo</span>
+                    <span className="world-color-hex-badge">
+                      {normalizeHex(schema.themeColor || DEFAULT_WORLD_COLOR)}
+                    </span>
+                  </div>
+                  <div className="world-color-swatches">
+                    {WORLD_COLOR_PRESETS.map((preset) => {
+                      const currentColor = normalizeHex(
+                        schema.themeColor || DEFAULT_WORLD_COLOR
+                      );
+                      const isSelected = currentColor === normalizeHex(preset.hex);
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          className={`color-swatch-btn ${isSelected ? 'active' : ''}`}
+                          style={{ backgroundColor: preset.hex }}
+                          onClick={() => updateSchemaColor(schema.id, preset.hex)}
+                          title={preset.name}
+                        >
+                          {isSelected && <Check size={14} strokeWidth={3} />}
+                        </button>
+                      );
+                    })}
+                    <label
+                      className="custom-color-input-label"
+                      title="Elegir color personalizado"
+                    >
+                      <input
+                        type="color"
+                        value={normalizeHex(schema.themeColor || DEFAULT_WORLD_COLOR)}
+                        onChange={(e) =>
+                          updateSchemaColor(schema.id, normalizeHex(e.target.value))
+                        }
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               className="icon-btn"
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              title={theme === 'dark' ? 'Cambiar a modo claro (Pergamino)' : 'Cambiar a modo oscuro (Esmeralda)'}
+              title={
+                theme === 'dark'
+                  ? 'Cambiar a modo claro (Pergamino)'
+                  : 'Cambiar a modo oscuro'
+              }
             >
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
@@ -873,6 +1135,13 @@ export default function Canvas() {
             >
               <LayoutGrid size={15} />
               <span>Códice (Galería)</span>
+            </button>
+            <button
+              className={`tab-btn ${activeTab === 'timeline' ? 'active' : ''}`}
+              onClick={() => setActiveTab('timeline')}
+            >
+              <Clock size={15} />
+              <span>Cronología (Anales)</span>
             </button>
             <button
               className={`tab-btn ${activeTab === 'map' ? 'active' : ''}`}
@@ -931,8 +1200,20 @@ export default function Canvas() {
               onAddEntity={handleAddEntity}
             />
           )}
+          {activeTab === 'timeline' && (
+            <TimelineView
+              nodes={nodes}
+              onSelectNode={switchToWiki}
+              onAddEntity={handleAddEntity}
+            />
+          )}
           {activeTab === 'map' && (
-            <MapView nodes={nodes} edges={edges} onSelectNode={switchToWiki} />
+            <MapView
+              nodes={nodes}
+              edges={edges}
+              onSelectNode={switchToWiki}
+              themeColor={schema.themeColor}
+            />
           )}
           {activeTab === 'family' && (
             <FamilyTreeView
@@ -976,6 +1257,15 @@ export default function Canvas() {
                 <div className="wiki-editor-shell">
                   {/* ENTITY HEADER */}
                   <div className="editor-header">
+                    <div
+                      className={`entity-emblem-badge ${
+                        activeNode.data.type === 'faction_entity'
+                          ? 'faction'
+                          : activeNode.data.type || 'generic'
+                      }`}
+                    >
+                      {getNodeIcon(activeNode.data.type, 26, '')}
+                    </div>
                     <div className="editor-title-wrap">
                       <input
                         type="text"
@@ -1066,6 +1356,15 @@ export default function Canvas() {
                           <div className="template-chips">
                             <button
                               type="button"
+                              className="template-chip-btn mention-trigger-btn"
+                              onClick={handleInsertAtSymbol}
+                              title="Escribe @ para vincular cualquier personaje, lugar, facción o elemento del mundo"
+                            >
+                              <AtSign size={12} />
+                              <span>Mencionar (@)</span>
+                            </button>
+                            <button
+                              type="button"
                               className="template-chip-btn"
                               onClick={() =>
                                 handleInsertTemplate(
@@ -1097,16 +1396,132 @@ export default function Canvas() {
                             >
                               + Poderes
                             </button>
+                            <button
+                              type="button"
+                              className={`template-chip-btn preview-toggle-btn ${
+                                isNarrativePreview ? 'active' : ''
+                              }`}
+                              onClick={() =>
+                                setIsNarrativePreview((prev) => !prev)
+                              }
+                              title={
+                                isNarrativePreview
+                                  ? 'Volver al editor de texto'
+                                  : 'Ver crónica con vínculos @ interactivos en el texto'
+                              }
+                            >
+                              {isNarrativePreview ? (
+                                <>
+                                  <Edit3 size={12} />
+                                  <span>Editar</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Eye size={12} />
+                                  <span>Vista Interactiva</span>
+                                </>
+                              )}
+                            </button>
                           </div>
                         </div>
-                        <textarea
-                          className="editor-textarea"
-                          value={activeNode.data.content || ''}
-                          onChange={(e) =>
-                            handleUpdateActiveNode({ content: e.target.value })
-                          }
-                          placeholder="Escribe aquí la historia, leyendas, descripciones, escenas clave o usa los botones de plantilla superiores..."
-                        />
+
+                        {isNarrativePreview ? (
+                          <div
+                            className="narrative-interactive-reader"
+                            onDoubleClick={() => setIsNarrativePreview(false)}
+                            title="Doble clic para volver a editar"
+                          >
+                            {!activeNode.data.content?.trim() ? (
+                              <p className="narrative-reader-empty">
+                                Aún no hay crónica redactada. Haz clic en «Editar» para comenzar y usa{' '}
+                                <strong>@</strong> para enlazar elementos del mundo.
+                              </p>
+                            ) : (
+                              activeNode.data.content
+                                .split('\n')
+                                .map((line, idx) => {
+                                  const trimmed = line.trim();
+                                  if (!trimmed) {
+                                    return (
+                                      <div
+                                        key={idx}
+                                        className="narrative-reader-spacer"
+                                      />
+                                    );
+                                  }
+                                  if (trimmed.startsWith('## ')) {
+                                    return (
+                                      <h3
+                                        key={idx}
+                                        className="narrative-reader-h2"
+                                      >
+                                        {renderTextWithMentions(
+                                          trimmed.slice(3),
+                                          nodes,
+                                          switchToWiki
+                                        )}
+                                      </h3>
+                                    );
+                                  }
+                                  if (trimmed.startsWith('# ')) {
+                                    return (
+                                      <h2
+                                        key={idx}
+                                        className="narrative-reader-h1"
+                                      >
+                                        {renderTextWithMentions(
+                                          trimmed.slice(2),
+                                          nodes,
+                                          switchToWiki
+                                        )}
+                                      </h2>
+                                    );
+                                  }
+                                  if (trimmed.startsWith('- ')) {
+                                    return (
+                                      <div
+                                        key={idx}
+                                        className="narrative-reader-bullet"
+                                      >
+                                        <span className="bullet-dot">•</span>
+                                        <span>
+                                          {renderTextWithMentions(
+                                            trimmed.slice(2),
+                                            nodes,
+                                            switchToWiki
+                                          )}
+                                        </span>
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <p key={idx} className="narrative-reader-p">
+                                      {renderTextWithMentions(
+                                        line,
+                                        nodes,
+                                        switchToWiki
+                                      )}
+                                    </p>
+                                  );
+                                })
+                            )}
+                          </div>
+                        ) : (
+                          <MentionTextarea
+                            textareaRefExternal={narrativeTextareaRef}
+                            className="editor-textarea"
+                            value={activeNode.data.content || ''}
+                            onChange={(val) =>
+                              handleUpdateActiveNode({ content: val })
+                            }
+                            nodes={nodes}
+                            sourceNodeId={activeNode.id}
+                            onLinkNode={handleEnsureLinkFromMention}
+                            onNavigateNode={switchToWiki}
+                            onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                            placeholder="Escribe aquí la historia, leyendas, descripciones o escenas clave... Usa @ para mencionar y vincular cualquier elemento de este mundo."
+                          />
+                        )}
                       </div>
 
                       {/* SUB-SECTIONS & OUTGOING LINKS */}
@@ -1178,15 +1593,20 @@ export default function Canvas() {
                                   <Trash2 size={16} />
                                 </button>
                               </div>
-                              <textarea
+                              <MentionTextarea
                                 className="embedded-child-textarea"
                                 value={conn.node!.data.content || ''}
-                                onChange={(e) =>
+                                onChange={(val) =>
                                   handleUpdateNode(conn.node!.id, {
-                                    content: e.target.value,
+                                    content: val,
                                   })
                                 }
-                                placeholder="Escribe el contenido de esta entidad vinculada..."
+                                nodes={nodes}
+                                sourceNodeId={conn.node!.id}
+                                onLinkNode={handleEnsureLinkFromMention}
+                                onNavigateNode={switchToWiki}
+                                onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                                placeholder="Escribe el contenido de esta entidad vinculada (usa @ para vincular elementos)..."
                               />
                             </div>
                           ))
@@ -1448,57 +1868,72 @@ export default function Canvas() {
 
                             <div className="form-group full-width">
                               <label>Apariencia Física</label>
-                              <textarea
+                              <MentionTextarea
                                 value={
                                   activeNode.data.structuredData
                                     ?.physicalAppearance || ''
                                 }
-                                onChange={(e) =>
+                                onChange={(val) =>
                                   handleUpdateActiveNode({
                                     structuredData: {
                                       ...activeNode.data.structuredData,
-                                      physicalAppearance: e.target.value,
+                                      physicalAppearance: val,
                                     },
                                   })
                                 }
-                                placeholder="Rasgos, vestimenta, cicatrices..."
+                                nodes={nodes}
+                                sourceNodeId={activeNode.id}
+                                onLinkNode={handleEnsureLinkFromMention}
+                                onNavigateNode={switchToWiki}
+                                onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                                placeholder="Rasgos, vestimenta, cicatrices... (usa @ para vincular)"
                               />
                             </div>
 
                             <div className="form-group full-width">
                               <label>Personalidad y Motivaciones</label>
-                              <textarea
+                              <MentionTextarea
                                 value={
                                   activeNode.data.structuredData?.personality ||
                                   ''
                                 }
-                                onChange={(e) =>
+                                onChange={(val) =>
                                   handleUpdateActiveNode({
                                     structuredData: {
                                       ...activeNode.data.structuredData,
-                                      personality: e.target.value,
+                                      personality: val,
                                     },
                                   })
                                 }
-                                placeholder="Virtudes, defectos, objetivos..."
+                                nodes={nodes}
+                                sourceNodeId={activeNode.id}
+                                onLinkNode={handleEnsureLinkFromMention}
+                                onNavigateNode={switchToWiki}
+                                onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                                placeholder="Virtudes, defectos, objetivos... (usa @ para vincular)"
                               />
                             </div>
 
                             <div className="form-group full-width">
                               <label>Trasfondo Resumido</label>
-                              <textarea
+                              <MentionTextarea
                                 value={
                                   activeNode.data.structuredData?.history || ''
                                 }
-                                onChange={(e) =>
+                                onChange={(val) =>
                                   handleUpdateActiveNode({
                                     structuredData: {
                                       ...activeNode.data.structuredData,
-                                      history: e.target.value,
+                                      history: val,
                                     },
                                   })
                                 }
-                                placeholder="Resumen de su pasado..."
+                                nodes={nodes}
+                                sourceNodeId={activeNode.id}
+                                onLinkNode={handleEnsureLinkFromMention}
+                                onNavigateNode={switchToWiki}
+                                onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                                placeholder="Resumen de su pasado... (usa @ para vincular)"
                               />
                             </div>
                           </div>
@@ -1718,54 +2153,69 @@ export default function Canvas() {
                           </div>
                           <div className="form-group full-width">
                             <label>Clima, Bioma y Geografía</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.climate || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    climate: e.target.value,
+                                    climate: val,
                                   },
                                 })
                               }
-                              placeholder="Relieve, clima, recursos naturales..."
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="Relieve, clima, recursos naturales... (usa @ para vincular)"
                             />
                           </div>
                           <div className="form-group full-width">
                             <label>Población, Cultura y Economía</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.population || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    population: e.target.value,
+                                    population: val,
                                   },
                                 })
                               }
-                              placeholder="Habitantes, tradiciones, comercio..."
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="Habitantes, tradiciones, comercio... (usa @ para vincular)"
                             />
                           </div>
                           <div className="form-group full-width">
                             <label>Puntos de Interés Destacados</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData
                                   ?.pointsOfInterest || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    pointsOfInterest: e.target.value,
+                                    pointsOfInterest: val,
                                   },
                                 })
                               }
-                              placeholder="Templos, fortalezas, ruinas, tabernas..."
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="Templos, fortalezas, ruinas, tabernas... (usa @ para vincular)"
                             />
                           </div>
                         </div>
@@ -1831,19 +2281,24 @@ export default function Canvas() {
                           </div>
                           <div className="form-group full-width">
                             <label>Ideología, Objetivos y Recursos</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.ideology || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    ideology: e.target.value,
+                                    ideology: val,
                                   },
                                 })
                               }
-                              placeholder="¿Qué buscan conseguir y con qué medios?"
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="¿Qué buscan conseguir y con qué medios? (usa @ para vincular)"
                             />
                           </div>
                         </div>
@@ -1886,20 +2341,25 @@ export default function Canvas() {
                           </div>
                           <div className="form-group full-width">
                             <label>Consecuencias Históricas</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.consequences ||
                                 ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    consequences: e.target.value,
+                                    consequences: val,
                                   },
                                 })
                               }
-                              placeholder="Impacto político, fronteras cambiadas, bajas..."
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="Impacto político, fronteras cambiadas, bajas... (usa @ para vincular)"
                             />
                           </div>
                         </div>
@@ -1957,36 +2417,46 @@ export default function Canvas() {
                           )}
                           <div className="form-group full-width">
                             <label>Propiedades, Capacidades y Efectos</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.powers || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    powers: e.target.value,
+                                    powers: val,
                                   },
                                 })
                               }
-                              placeholder="¿Qué permite hacer?"
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="¿Qué permite hacer? (usa @ para vincular)"
                             />
                           </div>
                           <div className="form-group full-width">
                             <label>Límites, Reglas o Coste de Uso</label>
-                            <textarea
+                            <MentionTextarea
                               value={
                                 activeNode.data.structuredData?.rules || ''
                               }
-                              onChange={(e) =>
+                              onChange={(val) =>
                                 handleUpdateActiveNode({
                                   structuredData: {
                                     ...activeNode.data.structuredData,
-                                    rules: e.target.value,
+                                    rules: val,
                                   },
                                 })
                               }
-                              placeholder="Restricciones, maldiciones o debilidades..."
+                              nodes={nodes}
+                              sourceNodeId={activeNode.id}
+                              onLinkNode={handleEnsureLinkFromMention}
+                              onNavigateNode={switchToWiki}
+                              onCreateAndLinkNode={handleCreateAndLinkFromMention}
+                              placeholder="Restricciones, maldiciones o debilidades... (usa @ para vincular)"
                             />
                           </div>
                         </div>
@@ -2144,6 +2614,16 @@ export default function Canvas() {
           </div>
         </div>
       )}
+
+      {/* COMMAND PALETTE MODAL (Ctrl + K) */}
+      <CommandPaletteModal
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        nodes={nodes}
+        onSelectNode={switchToWiki}
+        onAddEntity={handleAddEntity}
+        onSwitchTab={setActiveTab}
+      />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
   Star,
 } from 'lucide-react';
 import type { Node, NodeType } from '../store';
+import { renderTextWithMentions } from './MentionTextarea';
 
 interface CodexGalleryViewProps {
   nodes: Node[];
@@ -252,7 +253,9 @@ export default function CodexGalleryView({
                   </blockquote>
                 )}
 
-                <p className="codex-card-excerpt">{excerpt}</p>
+                <p className="codex-card-excerpt">
+                  {renderTextWithMentions(excerpt, nodes, onSelectNode)}
+                </p>
 
                 {sd?.tags && sd.tags.length > 0 && (
                   <div className="codex-card-tags">
