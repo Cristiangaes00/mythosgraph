@@ -24,11 +24,15 @@ generated/
 *.jsonl
 recovered_*.txt
 clean_schemas.json
+mythosgraph_cloud.json
+prisma/drive-sync-meta.json
 
-# Environment variables
+# Environment variables & Cloud Credentials
 .env
 .env.*
 !.env.example
+server/*.json
+*credentials*.json
 
 # Editor directories and files
 .vscode/*
