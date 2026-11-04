@@ -152,12 +152,31 @@ export interface Schema {
 
 export type SaveStatus = 'saved' | 'saving' | 'offline';
 
+export type DriveSyncState =
+  | 'synced'
+  | 'syncing'
+  | 'needs_seed_file'
+  | 'error'
+  | 'unconfigured';
+
+export interface DriveStatusInfo {
+  status: DriveSyncState;
+  folderId: string;
+  folderUrl: string;
+  fileId: string | null;
+  fileName: string | null;
+  serviceAccountEmail: string | null;
+  lastSyncedAt: number | null;
+  message: string;
+}
+
 interface AppState {
   theme: 'dark' | 'light';
   setTheme: (theme: 'dark' | 'light') => void;
   worldColors: Record<string, string>;
   isInitialized: boolean;
   saveStatus: SaveStatus;
+  driveStatus: DriveStatusInfo | null;
   schemas: Schema[];
   setSchemas: (schemas: Schema[]) => void;
   addSchema: (name: string, themeColor?: string) => string;
@@ -167,15 +186,68 @@ interface AppState {
   updateSchemaColor: (id: string, themeColor: string) => void;
   deleteSchema: (id: string) => void;
   init: () => Promise<void>;
+  refreshDriveStatus: () => Promise<void>;
+  syncDriveNow: () => Promise<DriveStatusInfo | null>;
   importData: (jsonData: string) => number;
   exportData: (schemaId?: string) => string;
 }
 
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let driveStatusPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStore = create<AppState>()(
   persist(
     (set, get) => {
+      const hydrateFromRawSchemas = (rawList: Schema[]) => {
+        set((state) => {
+          const nextWorldColors = { ...(state.worldColors || {}) };
+          for (const localSchema of state.schemas) {
+            if (localSchema.themeColor && !nextWorldColors[localSchema.id]) {
+              nextWorldColors[localSchema.id] = normalizeHex(
+                localSchema.themeColor
+              );
+            }
+          }
+
+          const hydratedSchemas: Schema[] = (rawList || []).map(
+            (rawSchema: Schema) => {
+              const { cleanEdges, extractedColor } = unpackEdgesAndMeta(
+                rawSchema.edges
+              );
+              const resolvedColor =
+                extractedColor ||
+                rawSchema.themeColor ||
+                nextWorldColors[rawSchema.id] ||
+                DEFAULT_WORLD_COLOR;
+              nextWorldColors[rawSchema.id] = normalizeHex(resolvedColor);
+
+              return {
+                ...rawSchema,
+                edges: cleanEdges,
+                themeColor: normalizeHex(resolvedColor),
+              };
+            }
+          );
+
+          return {
+            schemas: hydratedSchemas,
+            worldColors: nextWorldColors,
+            isInitialized: true,
+            saveStatus: 'saved',
+          };
+        });
+      };
+
+      const scheduleDriveStatusCheck = (delayMs = 1500) => {
+        if (driveStatusPollTimer) {
+          clearTimeout(driveStatusPollTimer);
+        }
+        driveStatusPollTimer = setTimeout(() => {
+          driveStatusPollTimer = null;
+          get().refreshDriveStatus();
+        }, delayMs);
+      };
+
       const scheduleSync = (id: string) => {
         const existingTimer = saveTimers.get(id);
         if (existingTimer) {
@@ -205,6 +277,7 @@ export const useStore = create<AppState>()(
             if (!res.ok) throw new Error('Error de servidor');
             if (saveTimers.size === 0) {
               set({ saveStatus: 'saved' });
+              scheduleDriveStatusCheck(1500);
             }
           } catch {
             set({ saveStatus: 'offline' });
@@ -220,51 +293,54 @@ export const useStore = create<AppState>()(
         worldColors: {},
         isInitialized: false,
         saveStatus: 'saved',
+        driveStatus: null,
         schemas: [],
         setSchemas: (schemas) => set({ schemas }),
+
+        refreshDriveStatus: async () => {
+          try {
+            const res = await fetch('/api/drive/status');
+            if (res.ok) {
+              const statusData: DriveStatusInfo = await res.json();
+              set({ driveStatus: statusData });
+            }
+          } catch {
+            // Ignore network error when offline
+          }
+        },
+
+        syncDriveNow: async () => {
+          set((state) => ({
+            driveStatus: state.driveStatus
+              ? {
+                  ...state.driveStatus,
+                  status: 'syncing',
+                  message: 'Sincronizando con Google Drive...',
+                }
+              : null,
+          }));
+          try {
+            const res = await fetch('/api/drive/sync', { method: 'POST' });
+            if (res.ok) {
+              const data: { driveStatus: DriveStatusInfo; schemas: Schema[] } =
+                await res.json();
+              hydrateFromRawSchemas(data.schemas);
+              set({ driveStatus: data.driveStatus });
+              return data.driveStatus;
+            }
+          } catch {
+            set({ saveStatus: 'offline' });
+          }
+          return null;
+        },
 
         init: async () => {
           try {
             const res = await fetch('/api/schemas');
             if (res.ok) {
               const data = await res.json();
-              set((state) => {
-                const nextWorldColors = { ...(state.worldColors || {}) };
-                for (const localSchema of state.schemas) {
-                  if (localSchema.themeColor && !nextWorldColors[localSchema.id]) {
-                    nextWorldColors[localSchema.id] = normalizeHex(
-                      localSchema.themeColor
-                    );
-                  }
-                }
-
-                const hydratedSchemas: Schema[] = (data || []).map(
-                  (rawSchema: Schema) => {
-                    const { cleanEdges, extractedColor } = unpackEdgesAndMeta(
-                      rawSchema.edges
-                    );
-                    const resolvedColor =
-                      extractedColor ||
-                      rawSchema.themeColor ||
-                      nextWorldColors[rawSchema.id] ||
-                      DEFAULT_WORLD_COLOR;
-                    nextWorldColors[rawSchema.id] = normalizeHex(resolvedColor);
-
-                    return {
-                      ...rawSchema,
-                      edges: cleanEdges,
-                      themeColor: normalizeHex(resolvedColor),
-                    };
-                  }
-                );
-
-                return {
-                  schemas: hydratedSchemas,
-                  worldColors: nextWorldColors,
-                  isInitialized: true,
-                  saveStatus: 'saved',
-                };
-              });
+              hydrateFromRawSchemas(data);
+              get().syncDriveNow();
               return;
             }
             set({ isInitialized: true, saveStatus: 'offline' });
@@ -303,6 +379,7 @@ export const useStore = create<AppState>()(
             .then((res) => {
               if (!res.ok) throw new Error('Failed to create');
               set({ saveStatus: 'saved' });
+              scheduleDriveStatusCheck(1500);
             })
             .catch(() => {
               set({ saveStatus: 'offline' });
@@ -353,6 +430,7 @@ export const useStore = create<AppState>()(
             .then((res) => {
               if (!res.ok) throw new Error('Failed to duplicate');
               set({ saveStatus: 'saved' });
+              scheduleDriveStatusCheck(1500);
             })
             .catch(() => {
               set({ saveStatus: 'offline' });
@@ -428,6 +506,7 @@ export const useStore = create<AppState>()(
             .then((res) => {
               if (!res.ok) throw new Error('Failed to delete');
               set({ saveStatus: 'saved' });
+              scheduleDriveStatusCheck(1500);
             })
             .catch(() => {
               set({ saveStatus: 'offline' });
@@ -438,9 +517,11 @@ export const useStore = create<AppState>()(
           const parsed = JSON.parse(jsonData);
           const schemasToImport: Schema[] = Array.isArray(parsed)
             ? parsed
-            : parsed && typeof parsed === 'object' && parsed.id && parsed.name
-              ? [parsed]
-              : [];
+            : parsed && typeof parsed === 'object' && Array.isArray(parsed.schemas)
+              ? parsed.schemas
+              : parsed && typeof parsed === 'object' && parsed.id && parsed.name
+                ? [parsed]
+                : [];
 
           if (
             schemasToImport.length === 0 ||
@@ -495,7 +576,10 @@ export const useStore = create<AppState>()(
               })
             )
           )
-            .then(() => set({ saveStatus: 'saved' }))
+            .then(() => {
+              set({ saveStatus: 'saved' });
+              scheduleDriveStatusCheck(1500);
+            })
             .catch(() => set({ saveStatus: 'offline' }));
 
           return cleanedToImport.length;

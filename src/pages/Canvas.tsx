@@ -37,6 +37,7 @@ import {
   Clock,
   PanelLeftClose,
   PanelLeftOpen,
+  Cloud,
 } from 'lucide-react';
 import MapView from '../components/MapView';
 import FamilyTreeView from '../components/FamilyTreeView';
@@ -92,6 +93,8 @@ export default function Canvas() {
   const schema = useStore((state) => state.schemas.find((s) => s.id === id));
   const isInitialized = useStore((state) => state.isInitialized);
   const saveStatus = useStore((state) => state.saveStatus);
+  const driveStatus = useStore((state) => state.driveStatus);
+  const syncDriveNow = useStore((state) => state.syncDriveNow);
   const theme = useStore((state) => state.theme);
   const setTheme = useStore((state) => state.setTheme);
   const updateSchema = useStore((state) => state.updateSchema);
@@ -1048,6 +1051,27 @@ export default function Canvas() {
                 </>
               )}
             </div>
+
+            <button
+              type="button"
+              className={`save-status-pill ${driveStatus?.status === 'synced' ? 'saved' : driveStatus?.status === 'syncing' ? 'saving' : 'offline'}`}
+              onClick={() => syncDriveNow()}
+              title={driveStatus?.message || 'Haz clic para sincronizar con Google Drive'}
+              style={{ cursor: 'pointer', background: 'transparent' }}
+            >
+              {driveStatus?.status === 'syncing' ? (
+                <RefreshCw size={13} />
+              ) : (
+                <Cloud size={13} />
+              )}
+              <span>
+                {driveStatus?.status === 'synced'
+                  ? 'Drive OK'
+                  : driveStatus?.status === 'syncing'
+                    ? 'Drive...'
+                    : 'Drive'}
+              </span>
+            </button>
 
             <div className="world-theme-picker-wrap" ref={worldColorPopoverRef}>
               <button
