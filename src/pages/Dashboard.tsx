@@ -24,6 +24,9 @@ import {
   Sparkles,
   ArrowRight,
   Calendar,
+  Cloud,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 import { useStore } from '../store';
 import {
@@ -59,12 +62,16 @@ export default function Dashboard() {
   const setTheme = useStore((state) => state.setTheme);
   const exportData = useStore((state) => state.exportData);
   const importData = useStore((state) => state.importData);
+  const driveStatus = useStore((state) => state.driveStatus);
+  const syncDriveNow = useStore((state) => state.syncDriveNow);
+  const refreshDriveStatus = useStore((state) => state.refreshDriveStatus);
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     clearWorldThemeFromDocument();
-  }, []);
+    refreshDriveStatus();
+  }, [refreshDriveStatus]);
 
   useEffect(() => {
     if (!toast) return;
@@ -74,6 +81,26 @@ export default function Dashboard() {
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
+  };
+
+  const handleManualDriveSync = async () => {
+    const result = await syncDriveNow();
+    if (!result) {
+      showToast('No se pudo conectar con el servidor local.', 'error');
+      return;
+    }
+    if (result.status === 'synced') {
+      showToast('Sincronizado con Google Drive correctamente.');
+    } else if (result.status === 'needs_seed_file') {
+      showToast('Sube primero mythosgraph_cloud.json a tu carpeta de Drive.', 'error');
+    } else if (result.status === 'error') {
+      showToast(result.message || 'Error al sincronizar con Google Drive.', 'error');
+    }
+  };
+
+  const handleDownloadSeedFile = () => {
+    window.open('/api/drive/seed-file', '_blank');
+    showToast('Archivo mythosgraph_cloud.json descargado.');
   };
 
   const handleCreate = (e: React.FormEvent) => {
@@ -218,6 +245,48 @@ export default function Dashboard() {
 
           <button
             className="btn-secondary"
+            onClick={handleManualDriveSync}
+            title={
+              driveStatus?.message ||
+              'Sincronizar mundos con Google Drive ahora'
+            }
+            style={{
+              borderColor:
+                driveStatus?.status === 'synced'
+                  ? 'rgba(16, 185, 129, 0.45)'
+                  : driveStatus?.status === 'needs_seed_file'
+                    ? 'rgba(245, 158, 11, 0.5)'
+                    : undefined,
+            }}
+          >
+            {driveStatus?.status === 'syncing' ? (
+              <RefreshCw size={17} style={{ color: 'var(--primary)' }} />
+            ) : (
+              <Cloud
+                size={17}
+                style={{
+                  color:
+                    driveStatus?.status === 'synced'
+                      ? '#10B981'
+                      : driveStatus?.status === 'needs_seed_file'
+                        ? '#F59E0B'
+                        : 'var(--text-muted)',
+                }}
+              />
+            )}
+            <span>
+              {driveStatus?.status === 'synced'
+                ? 'Drive OK'
+                : driveStatus?.status === 'syncing'
+                  ? 'Sincronizando...'
+                  : driveStatus?.status === 'needs_seed_file'
+                    ? 'Vincular JSON en Drive'
+                    : 'Sincronizar Drive'}
+            </span>
+          </button>
+
+          <button
+            className="btn-secondary"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             title={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
           >
@@ -254,6 +323,56 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      {/* ONE-TIME DRIVE SEED FILE SETUP BANNER */}
+      {driveStatus?.status === 'needs_seed_file' && (
+        <section
+          style={{
+            marginBottom: '1.5rem',
+            padding: '1rem 1.25rem',
+            borderRadius: '14px',
+            border: '1px solid rgba(245, 158, 11, 0.45)',
+            background: 'rgba(245, 158, 11, 0.08)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxWidth: '720px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#F59E0B' }}>
+              <Cloud size={18} />
+              <span>Último paso único: sube el archivo semilla a tu carpeta de Google Drive</span>
+            </div>
+            <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>
+              Tu cuenta de servicio (<code>{driveStatus.serviceAccountEmail}</code>) ya está conectada a tu carpeta{' '}
+              <strong>MithosGraph-Sync</strong>. Por política de cuota de Google Drive personal, arrastra una sola vez el archivo{' '}
+              <code>mythosgraph_cloud.json</code> dentro de esa carpeta; a partir de ahí MythosGraph lo actualizará automáticamente en cada cambio.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-secondary" onClick={handleDownloadSeedFile}>
+              <Download size={16} />
+              <span>1. Descargar mythosgraph_cloud.json</span>
+            </button>
+            <a
+              href={driveStatus.folderUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn-secondary"
+              style={{ textDecoration: 'none' }}
+            >
+              <ExternalLink size={16} />
+              <span>2. Abrir carpeta en Drive</span>
+            </a>
+            <button type="button" className="btn-primary" onClick={handleManualDriveSync}>
+              <RefreshCw size={16} />
+              <span>3. Ya lo subí, sincronizar</span>
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* SUMMARY STATS STRIP */}
       {schemas.length > 0 && (
